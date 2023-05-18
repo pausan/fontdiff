@@ -34,6 +34,10 @@ from PIL import Image, ImageDraw, ImageFont, ImageChops
 from fontTools import ttLib
 import numpy
 
+# ------------------------------------------------------------------------------
+# Symbol IDs cache
+# ------------------------------------------------------------------------------
+_symbolIdsCache = {}
 
 #  for glyph_codepoint, glyph_name in cmap.items():
 #    print(f"Glyph: {glyph_id}, {gid} Unicode Codepoint: {name}")
@@ -108,10 +112,54 @@ def drawSymbolMatrix(symbols, size, font_path, title = None, xoffset = 0, yoffse
   return image
 
 
+def fontSymbolIsEmpty(font, glyph_name):
+  """ Returns True if given symbol/glyph is empty
+  """
+  glyph = font['glyf'][glyph_name]
+
+  has_contours = glyph.numberOfContours != -1
+  has_components = glyph.components is not None
+
+  return not (has_contours or has_components)
+
 def getSymbolIds(font_path):
+  """ Return non-empty symbol IDs. Please note that simple/composite glyphs
+  that contain no rendering will be skipped, since in the end, defining
+  a symbol only to be left empty, is like if it was not defined in the first
+  place.
+  """
+  global _symbolIdsCache
+  if font_path in _symbolIdsCache:
+    return _symbolIdsCache[font_path]
+
   font = ttLib.TTFont(font_path)
   cmap = font.getBestCmap()
-  return set(cmap.keys())
+
+  # Note: we can return all symbols by doing this: return set(cmap.keys())
+
+  glyph_set = font.getGlyphSet()
+
+  # we want to get all symbol ids that are not empty/blank, we want glyphs
+  # that draw something on the screen
+  symbols = set()
+  for char, name in cmap.items():
+    try:
+      glyph = font['glyf'][name]
+
+      if glyph.isComposite():
+        is_empty_glyph = glyph.components is None
+      else:
+        is_empty_glyph = glyph.numberOfContours <= 0
+
+      if is_empty_glyph:
+        continue
+    except:
+      pass
+
+    symbols.add(char)
+
+  _symbolIdsCache = symbols
+  return symbols
 
 def compareFonts(
   font_path1,
@@ -183,12 +231,7 @@ def compareFonts(
   image_missing.save(f"{file_prefix}3_missing.png")
   diff.save(f"{file_prefix}_diff.png")
 
-  # save diff to another folder
-  (folder, file) = os.path.split(file_prefix)
-  os.makedirs(f'{folder}/diff', exist_ok = True)
-  shutil.copy2(f"{file_prefix}_diff.png", f"{folder}/diff/{file}.png")
-
-  return (sim_score)
+  return (sim_score, diff)
 
 def getFontDiffScore(
   codepoints_shared,
@@ -336,12 +379,14 @@ Examples:
 
   font1 = args.input_font
   if os.path.isfile(args.font_search_path):
-    ttf_files = [args.font_search_path]
+    font_files = [args.font_search_path]
 
   else:
     root_dir = args.font_search_path
     ttf_files = list(glob.glob('**/*.ttf', root_dir = root_dir, recursive = True))
-    ttf_files = [os.path.join(root_dir, file) for file in ttf_files]
+    otf_files = list(glob.glob('**/*.otf', root_dir = root_dir, recursive = True))
+    font_files = ttf_files + otf_files
+    font_files = [os.path.join(root_dir, file) for file in font_files]
 
   # extract copyright/license/...
   # font = ttLib.TTFont(font2)
@@ -349,7 +394,7 @@ Examples:
   #   print(record)
 
   script_start_time = time.time()
-  with open(f"{diff_folder}/analysis.txt", "at") as f:
+  with open(f"{diff_folder}/analysis.txt", "wt") as f:
     symbols1 = getSymbolIds(font1)
 
     log(f, f"Finding best match for: {font1:<32}")
@@ -357,12 +402,12 @@ Examples:
     matches = []
 
     top_score = 0
-    for idx, ttf_file in enumerate(ttf_files):
+    for idx, ttf_file in enumerate(font_files):
       font2 = ttf_file
       try:
 
         start_time = time.time()
-        log(f, f"\n[{idx+1}/{len(ttf_files)}] {font2}")
+        log(f, f"\n[{idx+1}/{len(font_files)}] {font2}")
 
         prefix = os.path.splitext(os.path.basename(font2))[0].lower()
         symbols2 = getSymbolIds(font2)
@@ -379,7 +424,7 @@ Examples:
           # log(f, f"  {'':<32}  Too many missing symbols: Skipping!!")
           #continue
 
-        if len(symbols1 & symbols2) < (len(symbols1)*0.95):
+        if len(symbols1 & symbols2) < (len(symbols1)*0.5):
           log(f, f"  {'':<32}  Too few shared symbols: Skipping!!")
           continue
 
@@ -410,7 +455,7 @@ Examples:
           log(f, f"  {'Best score is poor':<32}: Skipping non-promising font!")
 
         elif args.exhaustive_search:
-          score = compareFonts(
+          (score, _) = compareFonts(
             font1,
             font2,
             xoffset = best_x,
@@ -437,13 +482,18 @@ Examples:
 
     # generate a list of best matches
     top_matches = sorted(matches, key=lambda x: x['score'], reverse=True)
-    top25_folder = diff_folder + 'top25'
+    top25_folder = diff_folder + '/top25'
     os.makedirs(top25_folder, exist_ok=True)
-    top25_folder_fonts = diff_folder + 'top25/fonts'
+    diff_folder_fonts = top25_folder + '-diff'
+    os.makedirs(diff_folder_fonts, exist_ok=True)
+    top25_folder_fonts = top25_folder + '-fonts'
     os.makedirs(top25_folder_fonts, exist_ok=True)
+
+    shutil.copy2(font1, diff_folder)
 
     log(f, "\n\nTop 25 matches by score:")
     best_fonts = []
+    fonts_diff = {}
     for i, x in enumerate(top_matches[0:25]):
       log(f, f"  #{i+1:<2d} {x['font']:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
 
@@ -452,7 +502,7 @@ Examples:
 
       # recompute best alignment, since sometimes it might not be 100% ok
       (best_x, best_y, best_score) = searchBestAlignment(font1, font2)
-      score = compareFonts(
+      (score, diff) = compareFonts(
         font1,
         font2,
         xoffset = best_x,
@@ -466,8 +516,9 @@ Examples:
         'nmissing': x['nmissing'],
         'nshared': x['nshared'],
         'nwanted': x['nwanted'],
-        'score' : score
+        'score' : score,
       })
+      fonts_diff[font2] = diff
 
       shutil.copy2(font2, top25_folder_fonts)
 
@@ -476,7 +527,13 @@ Examples:
 
     best_fonts = sorted(best_fonts, key=lambda x: x['score'], reverse=True)
     for i, x in enumerate(best_fonts):
-      log(f, f"  #{i+1:<2d} {x['font']:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
+      font2 = x['font']
+      log(f, f"  #{i+1:<2d} {font2:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
+
+      # save diff to another folder, sorted by score
+      (_, file) = os.path.split(font2)
+      diff = fonts_diff[font2]
+      diff.save(f"{diff_folder_fonts}/{i+1:03d}-{file}-s{x['score']:1.3f}.png")
 
     best_fonts = [{'source_font' : font1, 'nsymbols' : len(symbols1)}] + best_fonts
     with open(f"{diff_folder}/analysis-top25.json", "wt") as f2:
