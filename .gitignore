@@ -1,8 +1,12 @@
-game-fonts*
-fonts-main*
-google-fonts*
+.cache
+*-fonts
+fonts-*
 *.ttf
 fonts*
 fdiff*
 tmp*
 out*
+
+*.zip
+__pycache__
+*.pyc

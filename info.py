@@ -57,7 +57,7 @@ Examples:
   if not args.out_dir:
     out_hash = util.getFileMd5(args.input_font)
     out_dir = os.path.split(os.path.splitext(args.input_font)[0])[1]
-    args.out_dir = f'tmp-info-{out_dir}-{out_hash[0:8]}'.lower()
+    args.out_dir = f'tmp/info-{out_dir}-{out_hash[0:8]}'.lower()
     os.makedirs(args.out_dir, exist_ok = True)
   out_dir = args.out_dir
 
@@ -69,7 +69,6 @@ Examples:
     MAX_HEIGHT = 900
     font_size = 32
     padding   = 32
-    image_height = min(2*padding + len(CHARSET_TEXT_MAP) * (font_size+padding), MAX_HEIGHT)
 
     if font1_path.endswith('.ttc'):
       util.log(f, "Multiple files found")
@@ -84,11 +83,25 @@ Examples:
       input_fonts = [font1_path]
 
     for font1_path in input_fonts:
-      util.log(f, f"MD5 of {font1_path}: {util.getFileMd5(font1_path)[:8]} {util.getFileMd5(font1_path)}")
       symbols1 = util.getSymbolIds(font1_path)
       font1 = ImageFont.truetype(font1_path, font_size)
+
+
+      num_lines = 0
+      for lang, text in CHARSET_TEXT_MAP.items():
+        # only draw charsets available on the first font
+        if len(set([ord(x) for x in text]) & symbols1) < 3:
+          continue
+        num_lines += 1
+
+      image_height = min(2*padding + num_lines * (font_size+padding), MAX_HEIGHT)
+
+
       image1 = Image.new("RGB", (1440, image_height), "white")
       draw1 = ImageDraw.Draw(image1)
+
+
+      util.log(f, f"Processing {font1_path}")
 
       image_y = padding
       font1charsets = []
@@ -104,9 +117,19 @@ Examples:
         draw1.text((padding, image_y), text, font=font1, fill="black")
         image_y += padding + font_size
 
-      print("- Charsets found: ", ', '.join(font1charsets))
+      util.log(f, f"  - MD5     : {util.getFileMd5(font1_path)[:8]} {util.getFileMd5(font1_path)}")
+      util.log(f, f"  - Symbols : {len(symbols1)}")
+      util.log(f, f"  - Charsets: {', '.join(font1charsets)}")
 
       image1.save(f"{args.out_dir}/{os.path.basename(font1_path).lower()}.png")
+      image = util.drawSymbolMatrix(
+        ''.join([chr(c) for c in sorted(list(symbols1))]),
+        None,
+        font1_path,
+        title=f"{len(symbols1)} symbols ({os.path.basename(font1_path)})"
+      )
+      image.save(f"{args.out_dir}/symbols-{os.path.basename(font1_path).lower()}.png")
+
 
     util.log(f, f"\nScript Took: {time.time()-script_start_time:.3f} seconds")
 

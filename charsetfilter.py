@@ -51,7 +51,7 @@ Examples:
   if not args.out_dir:
     out_hash = util.getFileMd5(args.input_font)
     out_dir = os.path.split(os.path.splitext(args.input_font)[0])[1]
-    args.out_dir = f'tmp-charset-{out_dir}-{out_hash[0:8]}'.lower()
+    args.out_dir = f'tmp/charset-{out_dir}-{out_hash[0:8]}'.lower()
     os.makedirs(args.out_dir, exist_ok = True)
   out_dir = args.out_dir
 

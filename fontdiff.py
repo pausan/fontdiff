@@ -80,7 +80,7 @@ def compareFonts(
 
   shared_size = math.ceil(len(codepoints_shared)**0.5)
 
-  (sim_score, diff) = getFontDiffScore(
+  (sim_score, diff) = util.getFontDiffScore(
     codepoints_shared,
     shared_size,
     font_path1,
@@ -121,109 +121,6 @@ def compareFonts(
 
   return (sim_score, diff)
 
-def getFontDiffScore(
-  codepoints_shared,
-  size,
-  font_path1,
-  font_path2,
-  xoffset,
-  yoffset
-):
-  """ Compute diff score between two images
-  """
-  im1 = util.drawSymbolMatrix(codepoints_shared, size, font_path1)
-  im2 = util.drawSymbolMatrix(codepoints_shared, size, font_path2, xoffset = xoffset, yoffset = yoffset)
-
-  diff = ImageChops.difference(im1, im2)
-  #histogram = diff.histogram()
-
-  # we can also try to minimize this:
-  #sim_score = 1/sum(h * (i**2) for i, h in enumerate(histogram)) / (float(im1.size[0]) * im1.size[1])
-
-  # 1/LOG(MSE) since we want to maximize
-  diff = diff.convert("L")
-  mse = numpy.mean(numpy.array(diff)) ** 2
-  sim_score= 1/math.log(mse)
-
-  #sim_score = histogram[0] / (float(im1.size[0]) * im1.size[1])
-  return (sim_score, diff)
-
-def fastSearchBestAlignment (
-  font_path1,
-  font_path2,
-  step = 2,
-  search_space = 12,
-  x = 0,
-  y = 0
-):
-  """ Quickly render a predefined string in a small grid to try to find
-  a good alignment without having to render all similar simbols; this way, while
-  less accurate, might help rendering simbols and finding similarities much
-  faster
-  """
-  best_score = 0
-  best_x = 0
-  best_y = 0
-
-  # this way we can explore a lot in very little time
-  bbox = search_space
-  for xoffset in range(x-bbox, x+bbox, step):
-    for yoffset in range(y-bbox, y+bbox, step):
-      (sim_score, _) = getFontDiffScore(
-        'abjsAWM15', # 9 random letters - typical that are written different
-        3,           # 3x3 grid
-        font_path1,
-        font_path2,
-        xoffset,
-        yoffset
-      )
-      if sim_score > best_score:
-        best_score = sim_score
-        best_x = xoffset
-        best_y = yoffset
-
-  return (best_x, best_y, best_score)
-
-def searchBestAlignment(font_path1, font_path2, search_space = 1):
-  """ Brute force search of any x/y axis to see how to match the font in the
-  best possible way to previous one.
-  """
-  (best_x, best_y, best_score) = fastSearchBestAlignment(font_path1, font_path2, step = 4)
-  (best_x, best_y, best_score) = fastSearchBestAlignment(font_path1, font_path2, step = 2, search_space = 4, x = best_x, y = best_y)
-
-  symbols1 = util.getSymbolIds(font_path1)
-  symbols2 = util.getSymbolIds(font_path2)
-
-  codepoints_shared = [ chr(c) for c in sorted(symbols1 & symbols2)]
-  size = math.ceil(len(codepoints_shared)**0.5)
-
-  # NOTE: increasing bbox might find a better
-  bbox = search_space
-  total_search_space = (2*bbox)**2
-
-  # brute force search
-  for i, xoffset in enumerate(range(best_x-bbox, best_x+bbox)):
-    for j, yoffset in enumerate(range(best_y-bbox, best_y+bbox)):
-      n = i*(2*bbox) + j + 1
-      sys.stdout.write (f"\r[{n:2d}/{total_search_space:2d}] Best offsets found ({best_x}, {best_y}, score={best_score:.3f})               ")
-      sys.stdout.flush()
-
-      (sim_score, _) = getFontDiffScore(
-        codepoints_shared,
-        size,
-        font_path1,
-        font_path2,
-        xoffset,
-        yoffset
-      )
-
-      if best_score is None or sim_score > best_score:
-        best_score = sim_score
-        best_x = xoffset
-        best_y = yoffset
-
-  print("")
-  return (best_x, best_y, best_score)
 
 def main():
   parser = argparse.ArgumentParser(
@@ -263,7 +160,7 @@ Examples:
   if not args.out_dir:
     out_hash = getFileMd5(args.input_font)
     out_dir = os.path.split(os.path.splitext(args.input_font)[0])[1]
-    args.out_dir = f'tmp-diff-{out_dir}-{out_hash[0:8]}'.lower()
+    args.out_dir = f'tmp/diff-{out_dir}-{out_hash[0:8]}'.lower()
 
   diff_folder = args.out_dir
   os.makedirs(diff_folder, exist_ok=True)
@@ -325,11 +222,11 @@ Examples:
         score = 0
         best_score = top_score
         if args.best_fit:
-          (best_x, best_y, best_score) = fastSearchBestAlignment(font1, font2, step = 3)
+          (best_x, best_y, best_score) = util.fastSearchBestAlignment(font1, font2, step = 3)
 
           # if quicksearch gives an score < 0.1 then there is no match so we can skip
           if best_score > 0.1:
-            (best_x, best_y, best_score) = fastSearchBestAlignment(
+            (best_x, best_y, best_score) = util.fastSearchBestAlignment(
               font1,
               font2,
               step = 1,
@@ -398,7 +295,7 @@ Examples:
       prefix = os.path.splitext(os.path.basename(font2))[0].lower()
 
       # recompute best alignment, since sometimes it might not be 100% ok
-      # (best_x, best_y, best_score) = searchBestAlignment(font1, font2)
+      # (best_x, best_y, best_score) = util.searchBestAlignment(font1, font2)
       best_x = x['best_x']
       best_y = x['best_y']
       best_score = x['score']

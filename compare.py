@@ -28,8 +28,8 @@ Analyze font and try to find a similar one
     """,
     epilog="""
 Examples:
-  $ python3 fontdiff.py -t "The Abc Of Text" -v FontName.ttf google-fonts
-  $ python3 fontdiff.py --fast-search -d cmpdir -b -v path/to/Font.ttf folder/containing/fonts
+  $ python3 compare.py -t "The Abc Of Text" -v FontName.ttf google-fonts
+  $ python3 compare.py -d cmpdir -v path/to/Font.ttf folder/containing/fonts
     """
   )
 
@@ -60,7 +60,7 @@ Examples:
   if not args.out_dir:
     out_hash = util.getFileMd5(args.input_font)
     out_dir = os.path.split(os.path.splitext(args.input_font)[0])[1]
-    args.out_dir = f'tmp-draw-{out_dir}-{out_hash[0:8]}'.lower()
+    args.out_dir = f'tmp/cmp-{out_dir}-{out_hash[0:8]}'.lower()
     os.makedirs(args.out_dir, exist_ok = True)
   out_dir = args.out_dir
 
@@ -87,10 +87,17 @@ Examples:
     # NOTE: adding font1 as a reference
     font_files = [font1_path] + font_files
 
+    num_lines = 0
+    for lang, text in LANG_TEXT_MAP.items():
+      # only draw charsets available on the first font
+      if len(set([ord(x) for x in text]) & symbols1) < 3:
+        continue
+      num_lines += 1
+
     MAX_HEIGHT = 900
     font_size = 32
     padding   = 32
-    image_height = min(2*padding + len(font_files) * (font_size+padding), MAX_HEIGHT)
+    image_height = min(2*padding + num_lines * (font_size+padding), MAX_HEIGHT)
     image1 = Image.new("RGB", (1440, image_height), "white")
     image2 = Image.new("RGB", (1440, image_height), "white")
     draw1 = ImageDraw.Draw(image1)
@@ -111,6 +118,11 @@ Examples:
       draw1 = ImageDraw.Draw(image1)
       draw2 = ImageDraw.Draw(image2)
 
+      font1base = os.path.splitext(os.path.basename(font1_path))[0]
+      font2base = os.path.splitext(os.path.basename(font2_path))[0]
+
+      (best_x, best_y, best_score) = util.searchBestAlignment(font1_path, font2_path)
+
       image_y = padding
       for lang, text in LANG_TEXT_MAP.items():
         # only draw charsets available on the first font
@@ -118,15 +130,45 @@ Examples:
           continue
 
         print (f"Drawing {lang:<12} {os.path.basename(font2_path)}")
-        draw1.text((padding, image_y-14), f"{lang.upper()} - {os.path.basename(font1_path)}", font=arial_font, fill="#f60")
+        draw1.text((padding, image_y-14), f"{lang.upper()} - {font1base}", font=arial_font, fill="#f60")
         draw1.text((padding, image_y), text, font=font1, fill="black")
 
-        draw2.text((padding, image_y-14), f"{lang.upper()} - {os.path.basename(font2_path)}", font=arial_font, fill="#f60")
-        draw2.text((padding, image_y), text, font=font2, fill="black")
+        draw2.text((padding, image_y-14), f"{lang.upper()} - {font2base} - (offset = {best_x}, {best_y})", font=arial_font, fill="#f60")
+        draw2.text((padding + best_x, image_y + best_y), text, font=font2, fill="black")
         image_y += padding + font_size
 
-      image1.save(f"{args.out_dir}/charset-{os.path.basename(font2_path).lower()}_0.png")
-      image2.save(f"{args.out_dir}/charset-{os.path.basename(font2_path).lower()}_1.png")
+      image1.save(f"{args.out_dir}/charset-{font2base.lower()}_0.png")
+      image2.save(f"{args.out_dir}/charset-{font2base.lower()}_1.png")
+      image1.save(
+        f"{args.out_dir}/diff-{font2base.lower()}.gif",
+        append_images=[image2],
+        save_all = True,
+        duration = 1000,
+        loop = 0
+      )
+
+      codepoints = [chr(s) for s in symbols1]
+      image1 = util.drawSymbolMatrix(
+        codepoints,
+        None,
+        font1_path,
+        title=font1base
+      )
+      image2 = util.drawSymbolMatrix(
+        codepoints,
+        None,
+        font2_path,
+        title=f"{font2base} (offset = {best_x}, {best_y})",
+        xoffset = best_x,
+        yoffset = best_y
+      )
+      image1.save(
+        f"{args.out_dir}/diff-all-{font2base.lower()}.gif",
+        append_images=[image2],
+        save_all = True,
+        duration = 1000,
+        loop = 0
+      )
 
     util.log(f, f"\nScript Took: {time.time()-script_start_time:.3f} seconds")
 
