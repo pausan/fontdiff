@@ -22,6 +22,11 @@
 #
 # More info: https://developers.google.com/fonts/faq?hl=en
 #
+# https://www.theleagueofmoveabletype.com/  -- gh
+# https://fontlibrary.org/
+# https://fontsource.org/
+# https://github.com/fontsource/fontsource/tree/main/fonts
+#
 import math
 import sys
 import os
@@ -30,136 +35,15 @@ import glob
 import json
 import argparse
 import shutil
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageSequence
 from fontTools import ttLib
 import numpy
+import util
 
 # ------------------------------------------------------------------------------
 # Symbol IDs cache
 # ------------------------------------------------------------------------------
-_symbolIdsCache = {}
-
-#  for glyph_codepoint, glyph_name in cmap.items():
-#    print(f"Glyph: {glyph_id}, {gid} Unicode Codepoint: {name}")
-
-  # font1 = ttLib.TTFont(font_path1)
-  # font2 = ttLib.TTFont(font_path2)
-
-  # cmap = font1.getBestCmap() # Cmap = character map
-  # for glyph, char_code in cmap.items():
-  #   print(f"Glyph: {glyph}, Character: {char_code}")
-
-  # symbols1 = font1.getGlyphSet().keys()
-  # symbols2 = font2.getGlyphSet().keys()
-
-  # print (f"Font1 has {len(symbols1)} glyphs")
-  # print (f"Font2 has {len(symbols2)} glyphs")
-
-  # symbols1_lookup = {}
-  # for glyph_name in symbols1:
-  #   gid = font1.getGlyphID(glyph_name)
-  #   symbols1_lookup[gid] = glyph_name
-
-  # symbols2_lookup = {}
-  # for glyph_name in symbols2:
-  #   gid = font2.getGlyphID(glyph_name)
-  #   symbols2_lookup[gid] = glyph_name
-
-g_font_size = 32
-g_padding = 4
-
-def drawText(text, font_path, out_file = None):
-  font = ImageFont.truetype(font_path, g_font_size)
-
-  (_left, _top, text_width, text_height) = font.getbbox(text)
-
-  image_width = 2*g_padding + text_width
-  image_height = 2*g_padding + text_height
-
-  image = Image.new("RGB", (image_width, image_height), "white")
-  draw = ImageDraw.Draw(image)
-
-  draw.text((g_padding, g_padding), text, font=font, fill="black")
-
-  if out_file:
-    image.save(out_file)
-
-  return image
-
-def drawSymbolMatrix(symbols, size, font_path, title = None, xoffset = 0, yoffset = 0):
-  """ yoffset helps skew font drawing
-  """
-  title_padding = 64 if title else 0
-
-  image_width = 2*g_padding + g_font_size*size
-  image_height = title_padding + g_padding + (g_padding + g_font_size)*size
-  # (_left, _top, text_width, text_height) = font.getbbox(line)
-
-  font = ImageFont.truetype(font_path, g_font_size)
-  image = Image.new("RGB", (image_width, image_height), "white")
-  draw = ImageDraw.Draw(image)
-
-  if title:
-    title_font = ImageFont.truetype("Arial.ttf", 16)
-    draw.text((8, 8), title, font=title_font, fill="black")
-
-  for i, symbol in enumerate(symbols):
-    x = xoffset + g_padding + (i%size)*g_font_size
-    y = yoffset + title_padding + g_padding + ((i-i%size)/size)*g_font_size
-
-    draw.text((x,y), symbol, font=font, fill="black")
-
-  return image
-
-
-def fontSymbolIsEmpty(font, glyph_name):
-  """ Returns True if given symbol/glyph is empty
-  """
-  glyph = font['glyf'][glyph_name]
-
-  has_contours = glyph.numberOfContours != -1
-  has_components = glyph.components is not None
-
-  return not (has_contours or has_components)
-
-def getSymbolIds(font_path):
-  """ Return non-empty symbol IDs. Please note that simple/composite glyphs
-  that contain no rendering will be skipped, since in the end, defining
-  a symbol only to be left empty, is like if it was not defined in the first
-  place.
-  """
-  global _symbolIdsCache
-  if font_path in _symbolIdsCache:
-    return _symbolIdsCache[font_path]
-
-  font = ttLib.TTFont(font_path)
-  cmap = font.getBestCmap()
-
-  # Note: we can return all symbols by doing this: return set(cmap.keys())
-
-  glyph_set = font.getGlyphSet()
-
-  # we want to get all symbol ids that are not empty/blank, we want glyphs
-  # that draw something on the screen
-  symbols = set()
-  for char, name in cmap.items():
-    try:
-      glyph = font['glyf'][name]
-
-      if glyph.isComposite():
-        is_empty_glyph = glyph.components is None
-      else:
-        is_empty_glyph = glyph.numberOfContours <= 0
-
-      if is_empty_glyph:
-        continue
-    except:
-      pass
-
-    symbols.add(char)
-
-  _symbolIdsCache = symbols
-  return symbols
+STANDARD_ALPHABET = 'abcçdefghijklmnñopqrstuvwxyzABCÇDEFGHIJKLMNÑOPQRSTUVWXYZ01234567890!=.,-+*/%$&€áéíóúäëïöü'
 
 def compareFonts(
   font_path1,
@@ -167,10 +51,10 @@ def compareFonts(
   xoffset = 0,
   yoffset = 0,
   file_prefix = "",
-  max_items_to_compare = None
+  alphabet = None
 ):
-  symbols1 = getSymbolIds(font_path1)
-  symbols2 = getSymbolIds(font_path2)
+  symbols1 = util.getSymbolIds(font_path1)
+  symbols2 = util.getSymbolIds(font_path2)
   symbols3 = list(symbols1 | symbols2)
 
   size = math.ceil(len(symbols3)**0.5)
@@ -190,8 +74,9 @@ def compareFonts(
       codepoints_missing_from2.append (' ')
 
   # to speedup the process we compare only a subset, if requested
-  if max_items_to_compare:
-    codepoints_shared=codepoints_shared[0:max_items_to_compare]
+  if alphabet:
+    # codepoints_shared=codepoints_shared[0:max_items_to_compare]
+    codepoints_shared = [x for x in codepoints_shared if x in alphabet]
 
   shared_size = math.ceil(len(codepoints_shared)**0.5)
 
@@ -204,32 +89,35 @@ def compareFonts(
     yoffset = yoffset
   )
 
+  font1_base = os.path.basename(font_path1)
+  font2_base = os.path.basename(font_path2)
+
   # if diff.getbbox() is not None:
-  image1 = drawSymbolMatrix(
+  image1 = util.drawSymbolMatrix(
     codepoints,
     size,
     font_path1,
-    title=font_path1
+    title=font1_base
   )
-  image2 = drawSymbolMatrix(
+  image2 = util.drawSymbolMatrix(
     codepoints,
     size,
     font_path2,
-    title=f"{font_path2} with offset {xoffset}, {yoffset}",
+    title=f"{font2_base} with offset {xoffset}, {yoffset}",
     xoffset = xoffset,
     yoffset = yoffset
   )
-  image_missing = drawSymbolMatrix(
+  image_missing = util.drawSymbolMatrix(
     codepoints_missing_from2,
     size,
     font_path1,
-    title=f"{len(symbols1 - symbols2)} {font_path1} chars not in {font_path2}"
+    title=f"{len(symbols1 - symbols2)} {font1_base} chars not in {font2_base}"
   )
 
   image1.save(f"{file_prefix}_font1.png")
   image2.save(f"{file_prefix}_font2.png")
   image_missing.save(f"{file_prefix}3_missing.png")
-  diff.save(f"{file_prefix}_diff.png")
+  # diff.save(f"{file_prefix}_diff.png")
 
   return (sim_score, diff)
 
@@ -243,8 +131,8 @@ def getFontDiffScore(
 ):
   """ Compute diff score between two images
   """
-  im1 = drawSymbolMatrix(codepoints_shared, size, font_path1)
-  im2 = drawSymbolMatrix(codepoints_shared, size, font_path2, xoffset = xoffset, yoffset = yoffset)
+  im1 = util.drawSymbolMatrix(codepoints_shared, size, font_path1)
+  im2 = util.drawSymbolMatrix(codepoints_shared, size, font_path2, xoffset = xoffset, yoffset = yoffset)
 
   diff = ImageChops.difference(im1, im2)
   #histogram = diff.histogram()
@@ -282,8 +170,8 @@ def fastSearchBestAlignment (
   for xoffset in range(x-bbox, x+bbox, step):
     for yoffset in range(y-bbox, y+bbox, step):
       (sim_score, _) = getFontDiffScore(
-        'A3K#', # 4 random letters
-        2,      # 2x2 grid
+        'abjsAWM15', # 9 random letters - typical that are written different
+        3,           # 3x3 grid
         font_path1,
         font_path2,
         xoffset,
@@ -303,8 +191,8 @@ def searchBestAlignment(font_path1, font_path2, search_space = 1):
   (best_x, best_y, best_score) = fastSearchBestAlignment(font_path1, font_path2, step = 4)
   (best_x, best_y, best_score) = fastSearchBestAlignment(font_path1, font_path2, step = 2, search_space = 4, x = best_x, y = best_y)
 
-  symbols1 = getSymbolIds(font_path1)
-  symbols2 = getSymbolIds(font_path2)
+  symbols1 = util.getSymbolIds(font_path1)
+  symbols2 = util.getSymbolIds(font_path2)
 
   codepoints_shared = [ chr(c) for c in sorted(symbols1 & symbols2)]
   size = math.ceil(len(codepoints_shared)**0.5)
@@ -337,14 +225,6 @@ def searchBestAlignment(font_path1, font_path2, search_space = 1):
   print("")
   return (best_x, best_y, best_score)
 
-def log(f, message):
-  print(message)
-  if f:
-    f.write(message)
-    f.write("\n")
-    f.flush()
-  return
-
 def main():
   parser = argparse.ArgumentParser(
     prog=sys.argv[0],
@@ -359,23 +239,36 @@ Examples:
     """
   )
 
+  parser.add_argument('-a', '--alphabet', help="Specify which letters should we try to match for scoring")
   parser.add_argument('--fast-search', action='store_true', help="Fast exploration to skip expensive comparisons (implies -b)")
   parser.add_argument('-b', '--best-fit', action='store_true', help="On each font, try to find the best fit")
-  parser.add_argument('-d', '--out-dir', default="fdiff", help="Output folder where images/diffs/etc will be generated")
+  parser.add_argument('-d', '--out-dir', help="Output folder where images/diffs/etc will be generated")
   parser.add_argument('-v', '--verbose', action='store_true')
   parser.add_argument('input_font')
   parser.add_argument('font_search_path')
 
   args = parser.parse_args()
+
   verbose = args.verbose
+
+  alphabet = args.alphabet
+  if args.alphabet in ["std", "standard"]:
+    alphabet = STANDARD_ALPHABET
 
   # if we want fast search we should go for best_fit for sure
   if args.fast_search:
     args.best_fit = True
   args.exhaustive_search = not args.fast_search
 
+  if not args.out_dir:
+    out_hash = getFileMd5(args.input_font)
+    out_dir = os.path.split(os.path.splitext(args.input_font)[0])[1]
+    args.out_dir = f'tmp-diff-{out_dir}-{out_hash[0:8]}'.lower()
+
   diff_folder = args.out_dir
   os.makedirs(diff_folder, exist_ok=True)
+
+  util.init()
 
   font1 = args.input_font
   if os.path.isfile(args.font_search_path):
@@ -395,10 +288,10 @@ Examples:
 
   script_start_time = time.time()
   with open(f"{diff_folder}/analysis.txt", "wt") as f:
-    symbols1 = getSymbolIds(font1)
+    symbols1 = util.getSymbolIds(font1)
 
-    log(f, f"Finding best match for: {font1:<32}")
-    log(f, f"{font1:<32}: {len(symbols1)} glyphs")
+    util.log(f, f"Finding best match for: {font1:<32}")
+    util.log(f, f"{font1:<32}: {len(symbols1)} glyphs")
     matches = []
 
     top_score = 0
@@ -407,25 +300,25 @@ Examples:
       try:
 
         start_time = time.time()
-        log(f, f"\n[{idx+1}/{len(font_files)}] {font2}")
+        util.log(f, f"\n[{idx+1}/{len(font_files)}] {font2}")
 
         prefix = os.path.splitext(os.path.basename(font2))[0].lower()
-        symbols2 = getSymbolIds(font2)
-        log(f, f"  {'Total glyps':<32}: {len(symbols1 | symbols2)} glyphs on both fonts")
-        log(f, f"  {os.path.basename(font2):<32}: {len(symbols2)} glyphs (vs {len(symbols1)})")
-        log(f, f"  {os.path.basename(font2):<32}: {len(symbols1&symbols2)} glyphs shared with {font1} (vs {len(symbols1)})")
-        log(f, f"  {os.path.basename(font2):<32}: {len(symbols1-symbols2)} glyphs missing from {font1}")
+        symbols2 = util.getSymbolIds(font2)
+        util.log(f, f"  {'Total glyps':<32}: {len(symbols1 | symbols2)} glyphs on both fonts")
+        util.log(f, f"  {os.path.basename(font2):<32}: {len(symbols2)} glyphs (vs {len(symbols1)})")
+        util.log(f, f"  {os.path.basename(font2):<32}: {len(symbols1&symbols2)} glyphs shared with {font1} (vs {len(symbols1)})")
+        util.log(f, f"  {os.path.basename(font2):<32}: {len(symbols1-symbols2)} glyphs missing from {font1}")
 
         diff_len = len(symbols1-symbols2)
         if diff_len < 15:
-          log(f, f"  {'':<32}  {sorted(list(symbols1-symbols2))}")
+          util.log(f, f"  {'':<32}  {sorted(list(symbols1-symbols2))}")
         else:
-          log(f, f"  {'':<32}  {sorted(list(symbols1-symbols2))[0:15]}...")
-          # log(f, f"  {'':<32}  Too many missing symbols: Skipping!!")
+          util.log(f, f"  {'':<32}  {sorted(list(symbols1-symbols2))[0:15]}...")
+          # util.log(f, f"  {'':<32}  Too many missing symbols: Skipping!!")
           #continue
 
         if len(symbols1 & symbols2) < (len(symbols1)*0.5):
-          log(f, f"  {'':<32}  Too few shared symbols: Skipping!!")
+          util.log(f, f"  {'':<32}  Too few shared symbols: Skipping!!")
           continue
 
         best_x = best_y = 0
@@ -445,14 +338,14 @@ Examples:
               y = best_y
             )
 
-          log(f, f"  {'Best alignment':<32}: ({best_x}, {best_y}, score={best_score:.3f}) {'BEST!!' if best_score > top_score else ''}")
+          util.log(f, f"  {'Best alignment':<32}: ({best_x}, {best_y}, score={best_score:.3f}) {'BEST!!' if best_score > top_score else ''}")
           if best_score > top_score:
             top_score = best_score
 
           score = best_score
 
         if best_score < 0.75*top_score:
-          log(f, f"  {'Best score is poor':<32}: Skipping non-promising font!")
+          util.log(f, f"  {'Best score is poor':<32}: Skipping non-promising font!")
 
         elif args.exhaustive_search:
           (score, _) = compareFonts(
@@ -461,11 +354,11 @@ Examples:
             xoffset = best_x,
             yoffset = best_y,
             file_prefix=diff_folder + "/" + prefix,
-            max_items_to_compare = 25 # TODO
+            alphabet = alphabet
           )
 
         end_time = time.time()
-        log(f, f"  Took {end_time-start_time:.3f} seconds (total of {time.time() - script_start_time:.3f} seconds so far)")
+        util.log(f, f"  Took {end_time-start_time:.3f} seconds (total of {time.time() - script_start_time:.3f} seconds so far)")
 
         matches.append ({
           'font' : font2,
@@ -477,37 +370,45 @@ Examples:
           'best_y' : best_y
         })
       except Exception as e:
-        log(f, f"  ERROR processing {font2}: {e}")
+        util.log(f, f"  ERROR processing {font2}: {e}")
         continue
 
     # generate a list of best matches
+    top_count = 50
     top_matches = sorted(matches, key=lambda x: x['score'], reverse=True)
-    top25_folder = diff_folder + '/top25'
-    os.makedirs(top25_folder, exist_ok=True)
-    diff_folder_fonts = top25_folder + '-diff'
+    top_folder = diff_folder + '/top'
+    gif_folder_fonts = top_folder + '-gif'
+    diff_folder_fonts = top_folder + '-diff'
+    top_folder_fonts = top_folder + '-fonts'
+
+    os.makedirs(top_folder, exist_ok=True)
+    os.makedirs(gif_folder_fonts, exist_ok=True)
     os.makedirs(diff_folder_fonts, exist_ok=True)
-    top25_folder_fonts = top25_folder + '-fonts'
-    os.makedirs(top25_folder_fonts, exist_ok=True)
+    os.makedirs(top_folder_fonts, exist_ok=True)
 
     shutil.copy2(font1, diff_folder)
 
-    log(f, "\n\nTop 25 matches by score:")
+    util.log(f, "\n\nTop matches by score (first pass):")
     best_fonts = []
     fonts_diff = {}
-    for i, x in enumerate(top_matches[0:25]):
-      log(f, f"  #{i+1:<2d} {x['font']:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
+    for i, x in enumerate(top_matches[0:top_count]):
+      util.log(f, f"  #{i+1:<2d} {x['font']:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
 
       font2  = x['font']
       prefix = os.path.splitext(os.path.basename(font2))[0].lower()
 
       # recompute best alignment, since sometimes it might not be 100% ok
-      (best_x, best_y, best_score) = searchBestAlignment(font1, font2)
+      # (best_x, best_y, best_score) = searchBestAlignment(font1, font2)
+      best_x = x['best_x']
+      best_y = x['best_y']
+      best_score = x['score']
       (score, diff) = compareFonts(
         font1,
         font2,
         xoffset = best_x,
         yoffset = best_y,
-        file_prefix=top25_folder + "/" + prefix
+        file_prefix=top_folder + "/" + prefix,
+        alphabet=alphabet
       )
       best_fonts.append ({
         'font' : font2,
@@ -520,26 +421,49 @@ Examples:
       })
       fonts_diff[font2] = diff
 
-      shutil.copy2(font2, top25_folder_fonts)
+      shutil.copy2(font2, top_folder_fonts)
 
-    log(f, "\n")
-    log(f, json.dumps(best_fonts, indent=2))
+    util.log(f, "\n")
+    util.log(f, json.dumps(best_fonts, indent=2))
 
+    util.log(f, "\n\nTop matches by score (final pass):")
     best_fonts = sorted(best_fonts, key=lambda x: x['score'], reverse=True)
     for i, x in enumerate(best_fonts):
       font2 = x['font']
-      log(f, f"  #{i+1:<2d} {font2:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
+      util.log(f, f"  #{i+1:<2d} {font2:<32}: alignment  =({x['best_x']:2d}, {x['best_y']:2d}) score={x['score']:<1.3f} shared={x['nshared']} missing={x['nmissing']} wanted={x['nwanted']}")
 
       # save diff to another folder, sorted by score
       (_, file) = os.path.split(font2)
       diff = fonts_diff[font2]
       diff.save(f"{diff_folder_fonts}/{i+1:03d}-{file}-s{x['score']:1.3f}.png")
+      image1 = util.drawSymbolMatrix(
+        STANDARD_ALPHABET,
+        None,
+        font1,
+        title=os.path.basename(font1)
+      )
+      image2 = util.drawSymbolMatrix(
+        STANDARD_ALPHABET,
+        None,
+        font2,
+        title=f"{os.path.basename(font2)} offset={x['best_x']}, {x['best_y']}  score={x['score']}",
+        xoffset = x['best_x'],
+        yoffset = x['best_y']
+      )
+      image1.save(
+        f"{gif_folder_fonts}/{i+1:03d}-{file}-s{x['score']:1.3f}.gif",
+        append_images=[image2],
+        save_all = True,
+        duration = 750,
+        loop = 0
+      )
+
 
     best_fonts = [{'source_font' : font1, 'nsymbols' : len(symbols1)}] + best_fonts
-    with open(f"{diff_folder}/analysis-top25.json", "wt") as f2:
-      log(f2, json.dumps(best_fonts, indent=2))
+    with open(f"{diff_folder}/analysis-top.json", "wt") as f2:
+      util.log(f2, json.dumps(best_fonts, indent=2))
 
-    log(f, f"\nScript Took: {time.time()-script_start_time:.3f} seconds")
+    util.log(f, f"\nScript Took: {time.time()-script_start_time:.3f} seconds")
 
 if __name__ == '__main__':
   main()
