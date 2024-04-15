@@ -7,8 +7,11 @@ import hashlib
 import _pickle as pickle
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 from fontTools import ttLib
+from fontTools import subset as FontSubset
+from fontTools.merge import Merger as FontMerger
 import util
 import numpy
+import tempfile
 
 CACHE_DIR = './.cache'
 CACHE_FORMAT = '.png'
@@ -90,6 +93,36 @@ class CachedImage:
     if (time.time() - self.last_updated) > 60:
       return True
     return False
+
+def drawFullSymbolMatrix(symbols, size, font_path, title = None, xoffset = 0, yoffset = 0):
+  """ yoffset helps skew font drawing
+  """
+  if not size:
+    size = math.ceil(len(symbols)**0.5)
+
+  title_padding = 64 if title else 0
+
+  image_width = 2*g_padding + g_font_size*size
+  image_height = title_padding + g_padding + (g_padding + g_font_size)*size
+
+  # (_left, _top, text_width, text_height) = font.getbbox(line)
+
+  font = ImageFont.truetype(font_path, g_font_size)
+  image = Image.new("RGB", (image_width, image_height), "white")
+  draw = ImageDraw.Draw(image)
+
+  if title:
+    title_font = ImageFont.truetype("Arial.ttf", 16)
+    draw.text((8, 8), title, font=title_font, fill="black")
+
+  for i, symbol in enumerate(symbols):
+    x = xoffset + g_padding + (i%size)*g_font_size
+    y = yoffset + title_padding + g_padding + ((i-i%size)/size)*g_font_size
+
+    draw.text((x,y), symbol, font=font, fill="black")
+
+  return image
+
 
 def drawSymbolMatrix(symbols, size, font_path, title = None, xoffset = 0, yoffset = 0):
   """ yoffset helps skew font drawing
@@ -200,7 +233,6 @@ def getSymbolIds(font_path):
   if font_path in g_symbolIdsCache:
     return g_symbolIdsCache[font_path]
 
-  font_path
   h = hashlib.blake2s()
   h.update(f"font-{font_path}".encode())
   cacheId = h.hexdigest()
@@ -346,3 +378,115 @@ def searchBestAlignment(font_path1, font_path2, search_space = 1):
 
   print("")
   return (best_x, best_y, best_score)
+
+def copyFontGlyphs(
+  base_font_file,
+  from_font_file,
+  target_font_file,
+  glyph_codepoints,
+):
+  """
+  Copy a subset of unicode codepoints from source font into target font.
+  Target font will be overwritten.
+
+  Please note that due to the complexity of the font format, we will use
+  some high-level classess from fonttools and abuse them. Instead of copying
+  each glyph, we'll get the source font, remove all fonts that we don't want
+  to copy, and then merge both fonts.
+
+  This approach will require creating a temporary file, and won't be as efficient
+  but the result will be more reliable.
+  """
+  try:
+    source_font = ttLib.TTFont(from_font_file)
+    subsetter = FontSubset.Subsetter()
+    # subsetter.populate(glyphs=glyph_codepoints) #??
+    subsetter.populate(unicodes=glyph_codepoints)
+    subsetter.subset(source_font)
+
+    ext = os.path.splitext(from_font_file)[1]
+    with tempfile.NamedTemporaryFile(suffix=ext) as temp:
+      subset_file = temp.name
+      # print (f"Saving temporary file (subset): {subset_file}")
+      source_font.save(subset_file)
+
+      # Merge the subset font with the target font
+      merger = FontMerger()
+      merged_font = merger.merge([base_font_file, subset_file])
+
+      # print (f"Merge into target: {merged_font_file}")
+      merged_font.save(target_font_file)
+  except Exception as e:
+    # print(f"Error copying glyphs: {e}")
+    return False
+  return True
+
+"""
+# Copying glyphs from one font to another is waaaaaaaaaay harder and trickier
+# than it might initially seem due to the complexity of the font files themselves
+# That's why another way to frame it is to just use the tools that fonttools
+# library provides for generating a subset of a font and for merging two fonts
+# which might be more "inneficient" but it is way more reliable
+def copyFontGlyphs(source_font_file, target_font_file, glyph_codepoint):
+  try:
+    source_font = ttLib.TTFont(source_font_file)
+    dest_font = ttLib.TTFont(target_font_file)
+
+    # Find the glyph name for the codepoint
+    glyph_name = source_font.getBestCmap()[glyph_codepoint]
+    if glyph_name is None:
+        print(f"Glyph '{glyph_codepoint}' not found in source font.")
+        return
+
+    source_glyph = source_font["glyf"].glyphs.get(glyph_name)
+    if source_glyph is None:
+        print(f"Glyph '{glyph_name}' not found in source font.")
+        return
+
+    # Add the glyph to the destination font
+    dest_font["glyf"].glyphs[glyph_name] = copy.deepcopy(source_glyph)
+
+    src_cmap = source_font["cmap"]
+    dest_cmap = dest_font["cmap"]
+    cmapPreferences = ((3, 10), (0, 6), (0, 4), (3, 1), (0, 3), (0, 2), (0, 1), (0, 0))
+    for platformID, platEncID in cmapPreferences:
+      if (
+        (src_cmap.getcmap(platformID, platEncID) is not None)
+        and glyph_codepoint in src_cmap.getcmap(platformID, platEncID).cmap
+      ):
+        dest_cmap.getcmap(platformID, platEncID).cmap[glyph_codepoint] = glyph_name
+        break
+
+    # adjust glyphOrder
+    if hasattr(dest_font, 'glyphOrder'):
+      dest_font.glyphOrder.append(glyph_name)
+
+    # adjust metrics font tables here
+    dest_font["hmtx"].metrics[glyph_name] = source_font["hmtx"].metrics[glyph_name]
+    if "vmtx" in source_font:
+      dest_font["vmtx"].metrics[glyph_name] = source_font["vmtx"].metrics[glyph_name]
+
+    # Update other font tables if necessary
+    # Example: If the glyph has references to other glyphs, update those references
+    if hasattr(source_glyph, "references"):
+        for component in source_glyph.references:
+            # Assuming all components are in the same glyph table
+            component_name = component.getComponentName(source_font)
+            if component_name in dest_font["glyf"].glyphs:
+                dest_font["glyf"].glyphs[glyph_name].addComponent(
+                    dest_font["glyf"].glyphs[component_name],
+                    component.transformation
+                )
+
+
+    # dest_font["hhea"].ascent = source_font["hhea"].ascent
+    # dest_font["hhea"].descent = source_font["hhea"].descent
+    # dest_font["hhea"].lineGap = source_font["hhea"].lineGap
+
+    dest_font.save(target_font_file)
+    return True
+  except Exception as e:
+    print(f"Error copying glyph: {e}")
+
+  return False
+"""
